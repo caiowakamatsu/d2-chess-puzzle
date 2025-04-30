@@ -41,7 +41,8 @@ def unwarp_image(image, ctx, debug):
         ctx.add("CLAHE Enhanced", enhanced)
 
     edges = cv2.Canny(enhanced, 50, 150)
-    ctx.add("Edges", edges)
+    if debug:
+        ctx.add("Edges", edges)
 
     contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     contour_img = image.copy()
@@ -182,6 +183,69 @@ def get_cells(image, ctx, debug, debug_internal):
     return cells
 
 
+def normalize_cell(cell, target_size=64, pad_value=0, ctx=None, debug=False):
+    gray = cell if len(cell.shape) == 2 else cv2.cvtColor(cell, cv2.COLOR_BGR2GRAY)
+    if debug and ctx:
+        ctx.add("Original Gray", gray)
+
+    clahe = cv2.createCLAHE(clipLimit=4.0, tileGridSize=(4, 4))
+    contrast = clahe.apply(gray)
+    if debug and ctx:
+        ctx.add("CLAHE Contrast", contrast)
+
+    blurred = cv2.GaussianBlur(contrast, (5, 5), 0)
+    _, binary = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    if debug and ctx:
+        ctx.add("Thresholded Binary", binary)
+
+    kernel = np.ones((3, 3), np.uint8)
+    closed = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
+    if debug and ctx:
+        ctx.add("Morph Closed", closed)
+
+    contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        if debug and ctx:
+            ctx.add("Fallback Resized", cv2.resize(cell, (target_size, target_size)))
+        return cv2.resize(cell, (target_size, target_size))
+
+    biggest = max(contours, key=cv2.contourArea)
+    x, y, w, h = cv2.boundingRect(biggest)
+    if debug and ctx:
+        boxed = cv2.cvtColor(gray.copy(), cv2.COLOR_GRAY2BGR)
+        cv2.rectangle(boxed, (x, y), (x + w, y + h), (0, 255, 0), 1)
+        ctx.add("Bounding Box on Gray", boxed)
+
+    cropped = cell[y:y+h, x:x+w]
+    if debug and ctx:
+        ctx.add("Cropped to Blob", cropped)
+
+    size = max(w, h)
+    square = np.full((size, size, 3) if len(cell.shape) == 3 else (size, size), pad_value, dtype=cell.dtype)
+    x_offset = (size - w) // 2
+    y_offset = (size - h) // 2
+    square[y_offset:y_offset+h, x_offset:x_offset+w] = cropped
+    if debug and ctx:
+        ctx.add("Square Centered", square)
+
+    resized = cv2.resize(square, (target_size, target_size), interpolation=cv2.INTER_AREA)
+    if debug and ctx:
+        ctx.add("Final Resized", resized)
+
+    return resized
+
+
+def process_image_into_cells(image):
+    ctx = ImageDebugContext(title=f"Image")
+    ctx.add("Original", image)
+    cells = get_cells(image, ctx, False, False)
+    processed_cells = []
+    for cell in cells:
+        processed_cells.append(normalize_cell(cell, ctx=ctx, debug=False))
+
+    return processed_cells
+
+
 if __name__ == "__main__":
     input_dir = "data"
     image_paths = glob(os.path.join(input_dir, "*.png"))
@@ -191,9 +255,15 @@ if __name__ == "__main__":
         image = cv2.imread(image_path)
 
         ctx = ImageDebugContext(title=f"Image: {filename}")
-        cells = get_cells(image, ctx, True, False)
+        ctx.add("Original", image)
+        cells = get_cells(image, ctx, False, False)
 
-        for cell in cells:
-            ctx.add("Cell", cell)
+        ctx.add("Cell pre20", cells[20])
+        processed_cell = normalize_cell(cells[20], ctx=ctx, debug=False)
+        ctx.add("Cell Post20", processed_cell)
+
+        ctx.add("Cell pre0", cells[0])
+        processed_cell = normalize_cell(cells[0], ctx=ctx, debug=False)
+        ctx.add("Cell Post0", processed_cell)
 
         ctx.show()
