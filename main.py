@@ -116,10 +116,6 @@ def tightly_crop_unwarped(image, ctx, debug):
         ctx.add("Slight Initial Crop", enhanced_slight_initial_crop)
 
     def find_border_start(image, direction='top', threshold=60):
-        """
-        Returns the pixel offset from the border where dark cell edge starts.
-        'threshold' is intensity under which we consider it "black".
-        """
         if direction == 'top':
             for i in range(image.shape[0]):
                 if np.mean(image[i, :]) < threshold:
@@ -211,6 +207,13 @@ def normalize_cell(cell, target_size=64, pad_value=0, ctx=None, debug=False):
 
     biggest = max(contours, key=cv2.contourArea)
     x, y, w, h = cv2.boundingRect(biggest)
+
+    aspect_ratio = max(w / h, h / w)
+    if aspect_ratio > 1.5:
+        if debug and ctx:
+            ctx.add("Aspect Ratio Rejected", cv2.resize(cell, (target_size, target_size)))
+        return cv2.resize(cell, (target_size, target_size))
+
     if debug and ctx:
         boxed = cv2.cvtColor(gray.copy(), cv2.COLOR_GRAY2BGR)
         cv2.rectangle(boxed, (x, y), (x + w, y + h), (0, 255, 0), 1)
@@ -238,10 +241,10 @@ def normalize_cell(cell, target_size=64, pad_value=0, ctx=None, debug=False):
 def process_image_into_cells(image):
     ctx = ImageDebugContext(title=f"Image")
     ctx.add("Original", image)
-    cells = get_cells(image, ctx, False, False)
+    cells = get_cells(image, ctx, True, True)
     processed_cells = []
     for cell in cells:
-        processed_cells.append(normalize_cell(cell, ctx=ctx, debug=False))
+        processed_cells.append(normalize_cell(cell, ctx=ctx, debug=True))
 
     return processed_cells
 
@@ -255,15 +258,8 @@ if __name__ == "__main__":
         image = cv2.imread(image_path)
 
         ctx = ImageDebugContext(title=f"Image: {filename}")
-        ctx.add("Original", image)
-        cells = get_cells(image, ctx, False, False)
-
-        ctx.add("Cell pre20", cells[20])
-        processed_cell = normalize_cell(cells[20], ctx=ctx, debug=False)
-        ctx.add("Cell Post20", processed_cell)
-
-        ctx.add("Cell pre0", cells[0])
-        processed_cell = normalize_cell(cells[0], ctx=ctx, debug=False)
-        ctx.add("Cell Post0", processed_cell)
+        cells = process_image_into_cells(image)
+        for cell in cells:
+            ctx.add("Debug", cell)
 
         ctx.show()
