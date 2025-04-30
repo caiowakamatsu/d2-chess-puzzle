@@ -3,8 +3,6 @@ import numpy as np
 import os
 from glob import glob
 import matplotlib.pyplot as plt
-from sklearn.cluster import KMeans
-import scipy.signal
 
 class ImageDebugContext:
     def __init__(self, title="Debug Output"):
@@ -34,23 +32,13 @@ class ImageDebugContext:
         plt.tight_layout()
         plt.show()
 
-# ---- CLAHE-only Processing ----
-input_dir = "data"
-image_paths = glob(os.path.join(input_dir, "*.png"))
 
-
-for image_path in image_paths:
-    filename = os.path.basename(image_path)
-    image = cv2.imread(image_path)
+def unwarp_image(image, ctx, debug):
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-
-    ctx = ImageDebugContext(title=f"Processing: {filename}")
-    ctx.add("Original", image)
-    ctx.add("Grayscale", gray)
-
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
     enhanced = clahe.apply(gray)
-    ctx.add("CLAHE Enhanced", enhanced)
+    if debug:
+        ctx.add("CLAHE Enhanced", enhanced)
 
     edges = cv2.Canny(enhanced, 50, 150)
     ctx.add("Edges", edges)
@@ -58,7 +46,8 @@ for image_path in image_paths:
     contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     contour_img = image.copy()
     cv2.drawContours(contour_img, contours, -1, (0, 255, 0), 2)
-    ctx.add("All Contours", contour_img)
+    if debug:
+        ctx.add("All Contours", contour_img)
 
     target_contour = None
     for cnt in sorted(contours, key=cv2.contourArea, reverse=True):
@@ -74,9 +63,10 @@ for image_path in image_paths:
         for i, pt in enumerate(target_contour):
             cv2.circle(grid_overlay, tuple(pt[0]), 10, (255, 0, 0), -1)
             cv2.putText(grid_overlay, f"{i}", tuple(pt[0] + [5, -5]), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
-        ctx.add("Detected Grid Corners", grid_overlay)
+        if debug:
+            ctx.add("Detected Grid Corners", grid_overlay)
     else:
-        print(f"Could not find a 4-point contour in {filename}")
+        return None
 
     def order_points(pts):
         rect = np.zeros((4, 2), dtype="float32")
@@ -104,58 +94,106 @@ for image_path in image_paths:
         M = cv2.getPerspectiveTransform(ordered, dst)
         warped = cv2.warpPerspective(image, M, (output_size, output_size))
 
-        ctx.add("Unwarped Puzzle Board", warped)
+        if debug:
+            ctx.add("Unwarped Puzzle Board", warped)
+        return warped
+    else:
+        return None
 
-        gray_warped = cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY)
-        enhanced_no_crop = clahe.apply(gray_warped)
+
+def tightly_crop_unwarped(image, ctx, debug):
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    gray_warped = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    enhanced_no_crop = clahe.apply(gray_warped)
+    if debug:
         ctx.add("Unwarped CLAHE Enhanced", enhanced_no_crop)
 
-        crop_threshold = 20
-        enhanced_slight_initial_crop = enhanced_no_crop[crop_threshold:-crop_threshold, crop_threshold:-crop_threshold]
-        original_slight_initial_crop = warped[crop_threshold:-crop_threshold, crop_threshold:-crop_threshold]
+    crop_threshold = 20
+    enhanced_slight_initial_crop = enhanced_no_crop[crop_threshold:-crop_threshold, crop_threshold:-crop_threshold]
+    original_slight_initial_crop = image[crop_threshold:-crop_threshold, crop_threshold:-crop_threshold]
+    if debug:
         ctx.add("Slight Initial Crop", enhanced_slight_initial_crop)
 
-        def find_border_start(image, direction='top', threshold=60):
-            """
-            Returns the pixel offset from the border where dark cell edge starts.
-            'threshold' is intensity under which we consider it "black".
-            """
-            if direction == 'top':
-                for i in range(image.shape[0]):
-                    if np.mean(image[i, :]) < threshold:
-                        return i
-            elif direction == 'bottom':
-                for i in range(image.shape[0] - 1, -1, -1):
-                    if np.mean(image[i, :]) < threshold:
-                        return image.shape[0] - i
-            elif direction == 'left':
-                for i in range(image.shape[1]):
-                    if np.mean(image[:, i]) < threshold:
-                        return i
-            elif direction == 'right':
-                for i in range(image.shape[1] - 1, -1, -1):
-                    if np.mean(image[:, i]) < threshold:
-                        return image.shape[1] - i
-            return 0
+    def find_border_start(image, direction='top', threshold=60):
+        """
+        Returns the pixel offset from the border where dark cell edge starts.
+        'threshold' is intensity under which we consider it "black".
+        """
+        if direction == 'top':
+            for i in range(image.shape[0]):
+                if np.mean(image[i, :]) < threshold:
+                    return i
+        elif direction == 'bottom':
+            for i in range(image.shape[0] - 1, -1, -1):
+                if np.mean(image[i, :]) < threshold:
+                    return image.shape[0] - i
+        elif direction == 'left':
+            for i in range(image.shape[1]):
+                if np.mean(image[:, i]) < threshold:
+                    return i
+        elif direction == 'right':
+            for i in range(image.shape[1] - 1, -1, -1):
+                if np.mean(image[:, i]) < threshold:
+                    return image.shape[1] - i
+        return 0
 
+    top_pad = find_border_start(enhanced_slight_initial_crop, 'top')
+    bottom_pad = find_border_start(enhanced_slight_initial_crop, 'bottom')
+    left_pad = find_border_start(enhanced_slight_initial_crop, 'left')
+    right_pad = find_border_start(enhanced_slight_initial_crop, 'right')
 
-        top_pad = find_border_start(enhanced_slight_initial_crop, 'top')
-        bottom_pad = find_border_start(enhanced_slight_initial_crop, 'bottom')
-        left_pad = find_border_start(enhanced_slight_initial_crop, 'left')
-        right_pad = find_border_start(enhanced_slight_initial_crop, 'right')
-
-        # cropped = enhanced_slight_initial_crop[top_pad:-bottom_pad, left_pad:-right_pad]
-        cropped = original_slight_initial_crop[top_pad:-bottom_pad, left_pad:-right_pad]
-        cropped = cv2.resize(cropped, [512, 512])
+    cropped = original_slight_initial_crop[top_pad:-bottom_pad, left_pad:-right_pad]
+    cropped = cv2.resize(cropped, [512, 512])
+    if debug:
         ctx.add("Tight Cropped (DEBUG)", cropped)
 
-        # Sanity check for debugging
-        proj_debug = cropped.copy()
+    return cropped
+
+
+def get_cells(image, ctx, debug, debug_internal):
+    unwarped_image = unwarp_image(image, ctx, debug_internal)
+    if debug:
+        ctx.add("Unwarped Image", unwarped_image)
+    tight_crop = tightly_crop_unwarped(unwarped_image, ctx, debug_internal)
+    if debug:
+        ctx.add("Tightly Cropped", tight_crop)
+
+    if debug:
+        proj_debug = tight_crop.copy()
         factor = 512.0 / 8.0
         for x in range(0, 7):
-            cv2.line(proj_debug, (int((x + 1) * factor), 0), (int((x + 1) * factor), output_size - 1), (255, 0, 0), 1)
+            cv2.line(proj_debug, (int((x + 1) * factor), 0), (int((x + 1) * factor), 512 - 1), (255, 0, 0), 1)
         for y in range(0, 7):
-            cv2.line(proj_debug, (0, int((y + 1) * factor)), (output_size - 1, int((y + 1) * factor)), (0, 255, 0), 1)
+            cv2.line(proj_debug, (0, int((y + 1) * factor)), (512 - 1, int((y + 1) * factor)), (0, 255, 0), 1)
         ctx.add("Detected Grid Lines", proj_debug)
 
-    ctx.show()
+    cells = []
+    factor = 512.0 / 8.0
+    for row in range(8):
+        for col in range(8):
+            x1 = int(col * factor)
+            y1 = int(row * factor)
+            x2 = int((col + 1) * factor)
+            y2 = int((row + 1) * factor)
+            cell = tight_crop[y1:y2, x1:x2]
+            resized_cell = cv2.resize(cell, (64, 64), interpolation=cv2.INTER_AREA)
+            cells.append(resized_cell)
+
+    return cells
+
+
+if __name__ == "__main__":
+    input_dir = "data"
+    image_paths = glob(os.path.join(input_dir, "*.png"))
+
+    for image_path in image_paths:
+        filename = os.path.basename(image_path)
+        image = cv2.imread(image_path)
+
+        ctx = ImageDebugContext(title=f"Image: {filename}")
+        cells = get_cells(image, ctx, True, False)
+
+        for cell in cells:
+            ctx.add("Cell", cell)
+
+        ctx.show()
